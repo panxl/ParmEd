@@ -11,9 +11,8 @@ import warnings
 from collections import Counter, OrderedDict
 
 import numpy as np
-import parmed.gromacs as gromacs
 
-from .. import unit as u
+from .. import gromacs, unit as u
 from ..amber import (AmberAsciiRestart, AmberMask, AmberMdcrd, AmberParm,
                      AmoebaParm, ChamberParm, NetCDFRestart, NetCDFTraj)
 from ..amber._chamberparm import ConvertFromPSF
@@ -151,13 +150,18 @@ class Action(lawsuit):
         if args or kwargs:
             if arg_list is None:
                 arg_list = ''
+            elif isinstance(arg_list, string_types) and ' ' in arg_list.strip():
+                # arg_list has a space, so enclose it in quotes
+                arg_list = '"%s"  ' % arg_list
             else:
                 arg_list = '%s ' % arg_list
-            arg_list += ' '.join([str(a) for a in args])
+            arg_list += ' '.join([self._format_arg(a) for a in args])
             for kw, item in iteritems(kwargs):
-                arg_list += ' %s %s ' % (kw, item)
+                arg_list += ' %s %s ' % (kw, self._format_arg(item))
         elif arg_list is None:
             arg_list = ArgumentList('')
+        elif isinstance(arg_list, string_types):
+            arg_list = self._format_arg(arg_list)
         # If our arg_list is a string, convert it to an ArgumentList
         if isinstance(arg_list, string_types):
             arg_list = ArgumentList(arg_list)
@@ -203,6 +207,7 @@ class Action(lawsuit):
                 else:
                     raise ParmError('%s objects are not supported by this action' %
                                     type(self.parm).__name__)
+        self._arg_list = arg_list
         try:
             self.init(arg_list)
         except NoArgument:
@@ -230,6 +235,17 @@ class Action(lawsuit):
 
     def __str__(self):
         return ''
+
+    @staticmethod
+    def _format_arg(arg):
+        """
+        Formats an argument so that if it's a string with a space in it, the argument will be
+        encapsulated with quotes
+        """
+        arg = str(arg)
+        if ' ' in arg or '\t' in arg:
+            return ' "%s" ' % arg
+        return arg
 
 #+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
@@ -1274,15 +1290,16 @@ class changeProtState(Action):
         """
         if 'ASH' in residues.titratable_residues: return None
         dummyrefene1 = residues._ReferenceEnergy()
-        dummyrefene1.set_pKa(1.0)
+        dummyrefene1_old = residues._ReferenceEnergy()
+        dummyrefene1_old.set_pKa(1.0)
         dummyrefene2 = residues._ReferenceEnergy()
         atomnames = ['N', 'H', 'CA', 'HA', 'CB', 'HB2', 'HB3', 'CG', 'OD1', 'OD2', 'HD21', 'C', 'O']
-        ash = residues.TitratableResidue('ASH', atomnames, pka=4.0)
-        ash.add_state(protcnt=0, refene=dummyrefene1,
+        ash = residues.TitratableResidue('ASH', atomnames, pka=4.0, typ="ph")
+        ash.add_state(protcnt=0, refene=dummyrefene1, refene_old=dummyrefene1_old, pka_corr=0.0,
                       charges=[-0.4157, 0.2719, 0.0341, 0.0864, -0.1783, -0.0122, -0.0122, 0.7994,
                                -0.8014, -0.8014, 0.0, 0.5973, -0.5679]
                      )
-        ash.add_state(protcnt=1, refene=dummyrefene2,
+        ash.add_state(protcnt=1, refene=dummyrefene2, refene_old=dummyrefene2, pka_corr=4.0,
                       charges=[-0.4157, 0.2719, 0.0341, 0.0864, -0.0316, 0.0488, 0.0488, 0.6462,
                                -0.5554, -0.6376, 0.4747, 0.5973, -0.5679]
                      )
@@ -1290,12 +1307,12 @@ class changeProtState(Action):
 
         atomnames = ['N', 'H', 'CA', 'HA', 'CB', 'HB2', 'HB3', 'CG', 'HG2', 'HG3', 'CD', 'OE1',
                      'OE2', 'HE21', 'C', 'O']
-        glh = residues.TitratableResidue('GLH', atomnames, pka=4.4)
-        glh.add_state(protcnt=0, refene=dummyrefene1,
+        glh = residues.TitratableResidue('GLH', atomnames, pka=4.4, typ="ph")
+        glh.add_state(protcnt=0, refene=dummyrefene1, refene_old=dummyrefene1_old, pka_corr=0.0,
                       charges=[-0.4157, 0.2719, 0.0145, 0.0779, -0.0398, -0.0173, -0.0173, 0.0136,
                                -0.0425, -0.0425, 0.8054, -0.8188, -0.8188, 0.0, 0.5973, -0.5679]
                      )
-        glh.add_state(protcnt=1, refene=dummyrefene2,
+        glh.add_state(protcnt=1, refene=dummyrefene2, refene_old=dummyrefene2, pka_corr=4.4,
                       charges=[-0.4157, 0.2719, 0.0145, 0.0779, -0.0071, 0.0256, 0.0256, -0.0174,
                                0.0430, 0.0430, 0.6801, -0.5838, -0.6511, 0.4641, 0.5973, -0.5679]
                      )
@@ -1316,6 +1333,8 @@ class changeProtState(Action):
         if not resname in residues.titratable_residues:
             raise ChangeStateError("Residue %s isn't defined as a titratable "
                                    "residue in titratable_residues.py" % resname)
+        if not getattr(residues, resname).typ == "ph":
+            raise ChangeStateError('Redidue %s is not a pH titratable residue' % resname)
 
         res = getattr(residues, resname)
 
@@ -1331,6 +1350,59 @@ class changeProtState(Action):
             if sel[atom.idx] != 1:
                 raise ChangeStateError('You must select 1 and only 1 entire residue of which to '
                                        'change the protonation state')
+            # Actually make the change
+            self.parm.parm_data['CHARGE'][atom.idx] = atom.charge = charges[i]
+            
+#+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+class changeRedoxState(Action):
+    """
+    Changes the reduction state of a given titratable residue that can be
+    treated via constant redox potential MD in Amber.
+    """
+    usage = '<mask> <state #>'
+    strictly_supported = (AmberParm,)
+    def init(self, arg_list):
+        self.state = arg_list.get_next_int()
+        self.mask = AmberMask(self.parm, arg_list.get_next_mask())
+
+    def __str__(self):
+        sel = self.mask.Selection()
+        if sum(sel) == 0:
+            return "No residues selected for state change"
+        res = self.parm.atoms[sel.index(1)].residue
+        return 'Changing reduction state of residue %d (%s) to %d' % (res.idx+1, res.name,
+                                                                        self.state)
+
+    def execute(self):
+        from parmed.amber import titratable_residues as residues
+        sel = self.mask.Selection()
+        # If we didn't select any residues, just return
+        if sum(sel) == 0: return
+        residue = self.parm.atoms[sel.index(1)].residue
+        resname = residue.name
+        # Get the charges from cein_data. The first 2 elements are energy and
+        # electron count so the charges are chgs[2:]
+        if not resname in residues.titratable_residues:
+            raise ChangeStateError("Residue %s isn't defined as a titratable "
+                                   "residue in titratable_residues.py" % resname)
+        if not getattr(residues, resname).typ == "redox":
+            raise ChangeStateError('Redidue %s is not a redox potential titratable residue' % resname)
+
+        res = getattr(residues, resname)
+
+        if self.state >= len(res.states):
+            raise ChangeStateError('Residue %s only has titratable states 0--%d. You chose state %d'
+                                   % (resname, len(res.states)-1, self.state))
+
+        if sum(sel) != len(res.states[self.state].charges):
+            raise ChangeStateError('You must select one and only one entire titratable residue')
+
+        charges = res.states[self.state].charges
+        for i, atom in enumerate(residue.atoms):
+            if sel[atom.idx] != 1:
+                raise ChangeStateError('You must select 1 and only 1 entire residue of which to '
+                                       'change the reduction state')
             # Actually make the change
             self.parm.parm_data['CHARGE'][atom.idx] = atom.charge = charges[i]
 
@@ -3565,18 +3637,18 @@ class deleteBond(Action):
         # Go through each atom in mask1 and see if it forms a bond with any atom
         # in mask2.
         bonds_to_delete = set()
-        self.del_bonds = []
-        self.del_angles = []
-        self.del_dihedrals = []
-        self.del_rbtorsions = []
-        self.del_urey_bradleys = []
-        self.del_impropers = []
-        self.del_cmaps = []
-        self.del_trigonal_angles = []
-        self.del_oopbends = []
-        self.del_pi_torsions = []
-        self.del_strbnds = []
-        self.del_tortors = []
+        self.del_bonds = set()
+        self.del_angles = set()
+        self.del_dihedrals = set()
+        self.del_rbtorsions = set()
+        self.del_urey_bradleys = set()
+        self.del_impropers = set()
+        self.del_cmaps = set()
+        self.del_trigonal_angles = set()
+        self.del_oopbends = set()
+        self.del_pi_torsions = set()
+        self.del_strbnds = set()
+        self.del_tortors = set()
         for i in self.mask1.Selected():
             ai = self.parm.atoms[i]
             for j in self.mask2.Selected():
@@ -3589,41 +3661,41 @@ class deleteBond(Action):
         # Find other valence terms we need to delete
         for i, bond in enumerate(self.parm.bonds):
             if bond in bonds_to_delete:
-                self.del_bonds.append(i)
+                self.del_bonds.add(i)
         for bond in bonds_to_delete:
             for i, angle in enumerate(self.parm.angles):
                 if bond in angle:
-                    self.del_angles.append(i)
+                    self.del_angles.add(i)
             for i, dihed in enumerate(self.parm.dihedrals):
                 if bond in dihed:
-                    self.del_dihedrals.append(i)
+                    self.del_dihedrals.add(i)
             for i, dihed in enumerate(self.parm.rb_torsions):
                 if bond in dihed:
-                    self.del_rbtorsions.append(i)
+                    self.del_rbtorsions.add(i)
             for i, urey in enumerate(self.parm.urey_bradleys):
                 if bond in urey:
-                    self.del_urey_bradleys.append(i)
+                    self.del_urey_bradleys.add(i)
             for i, improper in enumerate(self.parm.impropers):
                 if bond in improper:
-                    self.del_impropers.append(i)
+                    self.del_impropers.add(i)
             for i, cmap in enumerate(self.parm.cmaps):
                 if bond in cmap:
-                    self.del_cmaps.append(i)
+                    self.del_cmaps.add(i)
             for i, trigonal_angle in enumerate(self.parm.trigonal_angles):
                 if bond in trigonal_angle:
-                    self.del_trigonal_angles.append(i)
+                    self.del_trigonal_angles.add(i)
             for i, oopbend in enumerate(self.parm.out_of_plane_bends):
                 if bond in oopbend:
-                    self.del_oopbends.append(i)
+                    self.del_oopbends.add(i)
             for i, pitor in enumerate(self.parm.pi_torsions):
                 if bond in pitor:
-                    self.del_pi_torsions.append(i)
+                    self.del_pi_torsions.add(i)
             for i, strbnd in enumerate(self.parm.stretch_bends):
                 if bond in strbnd:
-                    self.del_strbnds.append(i)
+                    self.del_strbnds.add(i)
             for i, tortor in enumerate(self.parm.torsion_torsions):
                 if bond in tortor:
-                    self.del_tortors.append(i)
+                    self.del_tortors.add(i)
 
     def __str__(self):
         if not self.del_bonds:
@@ -3665,35 +3737,35 @@ class deleteBond(Action):
 
     def execute(self):
         if not self.del_bonds: return
-        for i in reversed(self.del_bonds):
+        for i in sorted(self.del_bonds, reverse=True):
             self.parm.bonds[i].delete()
             del self.parm.bonds[i]
-        for i in reversed(self.del_angles):
+        for i in sorted(self.del_angles, reverse=True):
             self.parm.angles[i].delete()
             del self.parm.angles[i]
-        for i in reversed(self.del_dihedrals):
+        for i in sorted(self.del_dihedrals, reverse=True):
             self.parm.dihedrals[i].delete()
             del self.parm.dihedrals[i]
-        for i in reversed(self.del_rbtorsions):
+        for i in sorted(self.del_rbtorsions, reverse=True):
             self.parm.rb_torsions[i].delete()
             del self.parm.rb_torsions[i]
-        for i in reversed(self.del_urey_bradleys):
+        for i in sorted(self.del_urey_bradleys, reverse=True):
             self.parm.urey_bradleys[i].delete()
             del self.parm.urey_bradleys[i]
-        for i in reversed(self.del_impropers):
+        for i in sorted(self.del_impropers, reverse=True):
             self.parm.impropers[i].delete()
             del self.parm.impropers[i]
-        for i in reversed(self.del_cmaps):
+        for i in sorted(self.del_cmaps, reverse=True):
             self.parm.cmaps[i].delete()
             del self.parm.cmaps[i]
-        for i in reversed(self.del_trigonal_angles):
+        for i in sorted(self.del_trigonal_angles, reverse=True):
             del self.parm.trigonal_angles[i]
-        for i in reversed(self.del_oopbends):
+        for i in sorted(self.del_oopbends, reverse=True):
             del self.parm.out_of_plane_bends[i]
-        for i in reversed(self.del_tortors):
+        for i in sorted(self.del_tortors, reverse=True):
             self.parm.torsion_torsions[i].delete()
             del self.parm.torsion_torsions[i]
-        for i in reversed(self.del_strbnds):
+        for i in sorted(self.del_strbnds, reverse=True):
             del self.parm.stretch_bends[i]
         try:
             self.parm.remake_parm()

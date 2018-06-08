@@ -123,14 +123,15 @@ class PDBFile(object):
 
         try:
             for line in fileobject:
-                if line[:6] in ('CRYST1', 'END   ', 'END', 'HEADER', 'NUMMDL',
+                if line[:6] in {'CRYST1', 'END   ', 'END', 'HEADER', 'NUMMDL',
                         'MASTER', 'AUTHOR', 'CAVEAT', 'COMPND', 'EXPDTA',
                         'MDLTYP', 'KEYWDS', 'OBSLTE', 'SOURCE', 'SPLIT ',
                         'SPRSDE', 'TITLE ', 'ANISOU', 'CISPEP', 'CONECT',
                         'DBREF ', 'HELIX ', 'HET   ', 'LINK  ', 'MODRES',
                         'REVDAT', 'SEQADV', 'SHEET ', 'SSBOND', 'FORMUL',
                         'HETNAM', 'HETSYN', 'SEQRES', 'SITE  ', 'ENDMDL',
-                        'MODEL ', 'TER   ', 'JRNL  ', 'REMARK', 'TER'):
+                        'MODEL ', 'TER   ', 'JRNL  ', 'REMARK', 'TER', 'DBREF ',
+                        'DBREF2', 'DBREF1', 'DBREF', 'HET'}:
                     continue
                 # Hack to support reduce-added flags
                 elif line[:6] == 'USER  ' and line[6:9] == 'MOD':
@@ -330,7 +331,9 @@ class PDBFile(object):
         last_resid = 1
         resend = 26
         res_hex = False
+        res_other = False
         atom_hex = False
+        atom_other = False
         atom_overflow = False
         ZEROSET = set('0')
         altloc_ids = set()
@@ -382,7 +385,10 @@ class PDBFile(object):
                         if not res_hex and resid == '9999':
                             resid = 9999
                         elif not res_hex:
-                            res_hex = int(resid, 16) == 10000
+                            try:
+                                res_hex = int(resid, 16) == 10000
+                            except ValueError:
+                                res_other = True
                         # So now we know if we use hexadecimal or not. If we do,
                         # convert. Otherwise, stay put
                         if res_hex:
@@ -396,6 +402,8 @@ class PDBFile(object):
                         elif resid == '1000' and line[26] == '0':
                             resend += 1
                             resid = 10000
+                        elif res_other:
+                            resid = last_resid + 1
                         else:
                             resid = int(resid)
                     elif resend > 26:
@@ -420,7 +428,7 @@ class PDBFile(object):
                                 atnum = last_atom_added.number + 1
                             else:
                                 raise
-                    elif atom_overflow:
+                    elif atom_overflow or atom_other:
                         atnum = last_atom_added.number + 1
                     else:
                         try:
@@ -430,8 +438,18 @@ class PDBFile(object):
                                 atom_overflow = True
                                 atnum = last_atom_added.number + 1
                             else:
-                                atnum = int(atnum, 16)
-                                atom_hex = True
+                                try:
+                                    atnum = int(atnum, 16)
+                                except ValueError:
+                                    atnum = last_atom_added.number + 1
+                                    atom_other = True
+                                else:
+                                    if atnum == last_atom_added.number + 1:
+                                        # Assume VMD numbers continuously
+                                        atom_hex = True
+                                    else:
+                                        atom_other = True
+                                        atnum = last_atom_added.number + 1
                     # It's possible that the residue number has cycled so much
                     # that it is now filled with ****'s. In that case, start a
                     # new residue if the current residue repeats the same atom
@@ -691,7 +709,8 @@ class PDBFile(object):
 
     @staticmethod
     def write(struct, dest, renumber=True, coordinates=None, altlocs='all',
-              write_anisou=False, charmm=False, standard_resnames=False):
+              write_anisou=False, charmm=False,
+              standard_resnames=False, increase_tercount=True):
         """ Write a PDB file from a Structure instance
 
         Parameters
@@ -736,6 +755,9 @@ class PDBFile(object):
         standard_resnames : bool, optional, default False
             If True, common aliases for various amino and nucleic acid residues
             will be converted into the PDB-standard values.
+        increase_tercount : bool, optional, default True
+            If True, the TER atom number field increased by one compared to
+            atom card preceding it; this conforms to PDB standard.
 
         Notes
         -----
@@ -894,11 +916,14 @@ class PDBFile(object):
                                 anisou[1], anisou[2], anisou[3],
                                 anisou[4], anisou[5], el, ''))
                 if res.ter or (len(struct.bonds) > 0 and _needs_ter_card(res)):
-                    dest.write(terrec % (anum+1, resname, res.chain, rnum))
-                    if renumber:
-                        nmore += 1
+                    if increase_tercount:
+                        dest.write(terrec % (anum+1, resname, res.chain, rnum))
+                        if renumber:
+                            nmore += 1
+                        else:
+                            last_number += 1
                     else:
-                        last_number += 1
+                        dest.write(terrec % (anum, resname, res.chain, rnum))
             if coords.shape[0] > 1:
                 dest.write('ENDMDL\n')
 
